@@ -1,0 +1,16 @@
+# Rust build artifacts
+/target/
+
+# macOS
+.DS_Store
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment / secrets
+.env
+.env.*
