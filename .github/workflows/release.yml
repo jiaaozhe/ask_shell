@@ -1,0 +1,166 @@
+name: release
+
+# 在推送形如 v0.1.0 的 tag 时触发，构建多平台二进制并发布到 GitHub Releases。
+# 用法:
+#   git tag v0.1.0
+#   git push origin v0.1.0
+#
+# 产物:
+#   ask-x86_64-apple-darwin.tar.gz      (macOS Intel)
+#   ask-aarch64-apple-darwin.tar.gz     (macOS Apple Silicon)
+#   ask-x86_64-unknown-linux-gnu.tar.gz (Linux x86_64)
+#   ask-x86_64-unknown-linux-musl.tar.gz(Linux 静态, 适合 Alpine/Docker)
+#   ask-x86_64-pc-windows-msvc.zip      (Windows)
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # 创建 Release 需要写权限
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # 单个平台失败不影响其他平台继续构建
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-13 # Intel runner
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-14 # Apple Silicon runner
+            archive: tar.gz
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            archive: tar.gz
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-22.04
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup set profile minimal
+          rustup toolchain install stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Install musl toolchain (Linux musl only)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Prepare staging directory
+        shell: bash
+        run: |
+          mkdir -p staging
+          # 二进制
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            cp "target/${{ matrix.target }}/release/ask.exe" staging/
+          else
+            cp "target/${{ matrix.target }}/release/ask" staging/
+          fi
+          # 附加文档，方便解压即可看
+          cp README.md staging/ 2>/dev/null || true
+          cp LICENSE staging/ 2>/dev/null || true
+
+      - name: Create archive (unix)
+        if: matrix.archive != 'zip'
+        shell: bash
+        run: |
+          archive="ask-${{ matrix.target }}.tar.gz"
+          tar -C staging -czf "$archive" .
+          echo "ASSET=$archive" >> "$GITHUB_ENV"
+
+      - name: Create archive (windows)
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          archive="ask-${{ matrix.target }}.zip"
+          (cd staging && 7z a "../$archive" .)
+          echo "ASSET=$archive" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ASSET }}
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la assets
+
+      - name: Generate release notes
+        id: notes
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          {
+            echo "notes<<EOF"
+            echo "## \`ask\` ${tag}"
+            echo
+            echo "下载对应平台的文件，解压后将 \`ask\` 放到 \`PATH\` 中即可使用。"
+            echo
+            echo "### 平台对照"
+            echo "| 文件 | 平台 |"
+            echo "| --- | --- |"
+            echo "| \`ask-x86_64-apple-darwin.tar.gz\` | macOS (Intel) |"
+            echo "| \`ask-aarch64-apple-darwin.tar.gz\` | macOS (Apple Silicon) |"
+            echo "| \`ask-x86_64-unknown-linux-gnu.tar.gz\` | Linux (x86_64, glibc) |"
+            echo "| \`ask-x86_64-unknown-linux-musl.tar.gz\` | Linux (x86_64, 静态, Alpine/Docker) |"
+            echo "| \`ask-x86_64-pc-windows-msvc.zip\` | Windows (x86_64) |"
+            echo
+            echo "### 安装示例 (macOS / Linux)"
+            echo
+            echo '```sh'
+            echo "tar -xzf ask-x86_64-apple-darwin.tar.gz"
+            echo "sudo mv ask /usr/local/bin/"
+            echo "ask --help"
+            echo '```'
+            echo
+            echo "### Rust 用户"
+            echo
+            echo '```sh'
+            echo "cargo install --git https://github.com/jiaaozhe/ask_shell --tag ${tag}"
+            echo '```'
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: assets/*
+          body: ${{ steps.notes.outputs.notes }}
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
