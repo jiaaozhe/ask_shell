@@ -6,18 +6,16 @@ name: release
 #   git push origin v0.1.0
 #
 # 产物:
-#   ask-x86_64-apple-darwin.tar.gz      (macOS Intel)
 #   ask-aarch64-apple-darwin.tar.gz     (macOS Apple Silicon)
 #   ask-x86_64-unknown-linux-gnu.tar.gz (Linux x86_64)
 #   ask-x86_64-unknown-linux-musl.tar.gz(Linux 静态, 适合 Alpine/Docker)
-#   ask-x86_64-pc-windows-msvc.zip      (Windows)
 on:
   push:
     tags:
       - "v*"
 
 permissions:
-  contents: write # 创建 Release 需要写权限
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -30,9 +28,6 @@ jobs:
       fail-fast: false # 单个平台失败不影响其他平台继续构建
       matrix:
         include:
-          - target: x86_64-apple-darwin
-            os: macos-13 # Intel runner
-            archive: tar.gz
           - target: aarch64-apple-darwin
             os: macos-14 # Apple Silicon runner
             archive: tar.gz
@@ -42,9 +37,6 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-22.04
             archive: tar.gz
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            archive: zip
 
     steps:
       - name: Checkout
@@ -69,30 +61,16 @@ jobs:
         shell: bash
         run: |
           mkdir -p staging
-          # 二进制
-          if [ "${{ matrix.archive }}" = "zip" ]; then
-            cp "target/${{ matrix.target }}/release/ask.exe" staging/
-          else
-            cp "target/${{ matrix.target }}/release/ask" staging/
-          fi
+          cp "target/${{ matrix.target }}/release/ask" staging/
           # 附加文档，方便解压即可看
           cp README.md staging/ 2>/dev/null || true
           cp LICENSE staging/ 2>/dev/null || true
 
-      - name: Create archive (unix)
-        if: matrix.archive != 'zip'
+      - name: Create archive
         shell: bash
         run: |
           archive="ask-${{ matrix.target }}.tar.gz"
           tar -C staging -czf "$archive" .
-          echo "ASSET=$archive" >> "$GITHUB_ENV"
-
-      - name: Create archive (windows)
-        if: matrix.archive == 'zip'
-        shell: bash
-        run: |
-          archive="ask-${{ matrix.target }}.zip"
-          (cd staging && 7z a "../$archive" .)
           echo "ASSET=$archive" >> "$GITHUB_ENV"
 
       - name: Upload artifact
@@ -105,6 +83,8 @@ jobs:
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # 创建 Release 需要写权限
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -132,16 +112,14 @@ jobs:
             echo "### 平台对照"
             echo "| 文件 | 平台 |"
             echo "| --- | --- |"
-            echo "| \`ask-x86_64-apple-darwin.tar.gz\` | macOS (Intel) |"
             echo "| \`ask-aarch64-apple-darwin.tar.gz\` | macOS (Apple Silicon) |"
             echo "| \`ask-x86_64-unknown-linux-gnu.tar.gz\` | Linux (x86_64, glibc) |"
             echo "| \`ask-x86_64-unknown-linux-musl.tar.gz\` | Linux (x86_64, 静态, Alpine/Docker) |"
-            echo "| \`ask-x86_64-pc-windows-msvc.zip\` | Windows (x86_64) |"
             echo
             echo "### 安装示例 (macOS / Linux)"
             echo
             echo '```sh'
-            echo "tar -xzf ask-x86_64-apple-darwin.tar.gz"
+            echo "tar -xzf ask-aarch64-apple-darwin.tar.gz"
             echo "sudo mv ask /usr/local/bin/"
             echo "ask --help"
             echo '```'
