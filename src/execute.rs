@@ -1,7 +1,6 @@
-use std::{io, process::Stdio, time::Duration};
+use std::{process::Stdio, time::Duration};
 
 use anyhow::{Context, Result};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -20,82 +19,19 @@ pub struct CommandOutput {
     pub stderr_truncated: bool,
 }
 
-/// Runs an approved command, streaming its output to the terminal live while
-/// capturing it so a failed or unsatisfying result can be fed back to the model.
+/// Runs an approved command and captures its output so a failed or
+/// unsatisfying result can be fed back to the model.
 pub async fn run_captured(shell: &Shell, command: &str) -> Result<CommandOutput> {
-    let mut child = Command::new(&shell.path)
+    let output = Command::new(&shell.path)
         .arg("-lc")
         .arg(command)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("failed to run command with {}", shell.path.display()))?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .context("piped stdout was not attached")?;
-    let stderr = child
-        .stderr
-        .take()
-        .context("piped stderr was not attached")?;
-
-    let (stdout, stderr) = tokio::join!(
-        copy_and_capture(stdout, tokio::io::stdout()),
-        copy_and_capture(stderr, tokio::io::stderr()),
-    );
-
-    let (stdout, stdout_truncated) = stdout.context("failed to capture stdout")?;
-    let (stderr, stderr_truncated) = stderr.context("failed to capture stderr")?;
-
-    let status = child
-        .wait()
+        .output()
         .await
-        .with_context(|| format!("failed to wait for command with {}", shell.path.display()))?;
-
-    Ok(CommandOutput {
-        exit_code: status.code(),
-        success: status.success(),
-        stdout,
-        stderr,
-        stdout_truncated,
-        stderr_truncated,
-    })
-}
-
-/// Copies a stream to a writer in real time while accumulating up to
-/// `CAPTURE_LIMIT_BYTES` for later inspection.
-async fn copy_and_capture<R, W>(mut reader: R, mut writer: W) -> io::Result<(String, bool)>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
-    let mut buf = [0u8; 8 * 1024];
-    let mut collected: Vec<u8> = Vec::new();
-    let mut truncated = false;
-
-    loop {
-        let n = reader.read(&mut buf).await?;
-        if n == 0 {
-            break;
-        }
-
-        writer.write_all(&buf[..n]).await?;
-        writer.flush().await?;
-
-        if !truncated {
-            let remaining = CAPTURE_LIMIT_BYTES.saturating_sub(collected.len());
-            if remaining > 0 {
-                collected.extend_from_slice(&buf[..n.min(remaining)]);
-            }
-            if collected.len() >= CAPTURE_LIMIT_BYTES {
-                truncated = true;
-            }
-        }
-    }
-
-    Ok((String::from_utf8_lossy(&collected).to_string(), truncated))
+        .with_context(|| format!("failed to run command with {}", shell.path.display()))?;
+    Ok(split_output(output))
 }
 
 /// Runs a read-only inspect command and captures its output, bounded by
@@ -119,17 +55,21 @@ pub async fn capture(shell: &Shell, command: &str) -> Result<CommandOutput> {
             )
         })?;
 
+    Ok(split_output(output))
+}
+
+fn split_output(output: std::process::Output) -> CommandOutput {
     let (stdout, stdout_truncated) = truncate_output(&output.stdout);
     let (stderr, stderr_truncated) = truncate_output(&output.stderr);
 
-    Ok(CommandOutput {
+    CommandOutput {
         exit_code: output.status.code(),
         success: output.status.success(),
         stdout,
         stderr,
         stdout_truncated,
         stderr_truncated,
-    })
+    }
 }
 
 fn truncate_output(bytes: &[u8]) -> (String, bool) {

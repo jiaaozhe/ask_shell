@@ -1,6 +1,7 @@
 use std::io::{self, IsTerminal, Write};
 
 use anyhow::{bail, Result};
+use console::Term;
 use dialoguer::{theme::ColorfulTheme, Select};
 use rustyline::DefaultEditor;
 
@@ -89,7 +90,6 @@ pub fn review_inspect(inspect: &InspectRequest) -> Result<bool> {
 }
 
 pub fn print_inspect_output(output: &CommandOutput) {
-    eprintln!();
     eprintln!("Inspect output:");
     print_output_body(output);
 }
@@ -141,19 +141,26 @@ pub fn review_command(mut command: String, note: String) -> Result<CommandOutcom
     }
 }
 
+fn styled(text: &str, code: &str) -> String {
+    if io::stderr().is_terminal() {
+        format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_string()
+    }
+}
+
 pub fn review_command_result(output: &CommandOutput) -> Result<PostRunDecision> {
-    eprintln!();
     eprintln!("Result:");
     print_output_body(output);
-    eprintln!();
-    eprintln!(
-        "Status: {}",
-        match output.exit_code {
-            Some(0) => "succeeded (exit 0)".to_string(),
-            Some(code) => format!("failed (exit {code})"),
-            None => "terminated by signal".to_string(),
-        }
-    );
+
+    if !output.success {
+        let status = match output.exit_code {
+            Some(code) => styled(&format!("failed (exit {code})"), "31"),
+            None => styled("terminated by signal", "31"),
+        };
+        eprintln!();
+        eprintln!("Status: {status}");
+    }
     eprintln!();
 
     let continue_by_default = !output.success;
@@ -259,11 +266,15 @@ fn choose_post_run_decision(continue_by_default: bool) -> Result<bool> {
 }
 
 fn select_action(items: &[&str], default: usize) -> Result<Option<usize>> {
-    Ok(Select::with_theme(&ColorfulTheme::default())
+    let selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Action")
         .items(items)
         .default(default)
-        .interact_opt()?)
+        .interact_opt()?;
+    // dialoguer 交互后会保留一行 "✔ Action <selected>" 回显;用户刚选过,
+    // 清除这行冗余信息,让后续输出紧接。
+    let _ = Term::stderr().clear_last_lines(1);
+    Ok(selection)
 }
 
 fn read_feedback() -> Result<String> {

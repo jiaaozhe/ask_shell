@@ -65,6 +65,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "console",
  "dialoguer",
  "indicatif",
  "reqwest",

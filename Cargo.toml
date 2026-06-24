@@ -7,6 +7,7 @@ edition = "2021"
 anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
+console = "0.15"
 dialoguer = "0.11"
 indicatif = "0.17"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
@@ -14,7 +15,7 @@ rpassword = "7"
 rustyline = "14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "time", "io-util", "io-std"] }
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "time"] }
 toml = "0.8"
 
 [dev-dependencies]
