@@ -1,6 +1,7 @@
-use std::time::Duration;
+use std::{io, process::Stdio, time::Duration};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -19,24 +20,86 @@ pub struct CommandOutput {
     pub stderr_truncated: bool,
 }
 
-pub async fn run(shell: &Shell, command: &str) -> Result<()> {
-    let status = Command::new(&shell.path)
+/// Runs an approved command, streaming its output to the terminal live while
+/// capturing it so a failed or unsatisfying result can be fed back to the model.
+pub async fn run_captured(shell: &Shell, command: &str) -> Result<CommandOutput> {
+    let mut child = Command::new(&shell.path)
         .arg("-lc")
         .arg(command)
-        .status()
-        .await
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
         .with_context(|| format!("failed to run command with {}", shell.path.display()))?;
 
-    if !status.success() {
-        match status.code() {
-            Some(code) => bail!("command exited with status {code}"),
-            None => bail!("command terminated by signal"),
+    let stdout = child
+        .stdout
+        .take()
+        .context("piped stdout was not attached")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("piped stderr was not attached")?;
+
+    let (stdout, stderr) = tokio::join!(
+        copy_and_capture(stdout, tokio::io::stdout()),
+        copy_and_capture(stderr, tokio::io::stderr()),
+    );
+
+    let (stdout, stdout_truncated) = stdout.context("failed to capture stdout")?;
+    let (stderr, stderr_truncated) = stderr.context("failed to capture stderr")?;
+
+    let status = child
+        .wait()
+        .await
+        .with_context(|| format!("failed to wait for command with {}", shell.path.display()))?;
+
+    Ok(CommandOutput {
+        exit_code: status.code(),
+        success: status.success(),
+        stdout,
+        stderr,
+        stdout_truncated,
+        stderr_truncated,
+    })
+}
+
+/// Copies a stream to a writer in real time while accumulating up to
+/// `CAPTURE_LIMIT_BYTES` for later inspection.
+async fn copy_and_capture<R, W>(mut reader: R, mut writer: W) -> io::Result<(String, bool)>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buf = [0u8; 8 * 1024];
+    let mut collected: Vec<u8> = Vec::new();
+    let mut truncated = false;
+
+    loop {
+        let n = reader.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+
+        writer.write_all(&buf[..n]).await?;
+        writer.flush().await?;
+
+        if !truncated {
+            let remaining = CAPTURE_LIMIT_BYTES.saturating_sub(collected.len());
+            if remaining > 0 {
+                collected.extend_from_slice(&buf[..n.min(remaining)]);
+            }
+            if collected.len() >= CAPTURE_LIMIT_BYTES {
+                truncated = true;
+            }
         }
     }
 
-    Ok(())
+    Ok((String::from_utf8_lossy(&collected).to_string(), truncated))
 }
 
+/// Runs a read-only inspect command and captures its output, bounded by
+/// `INSPECT_TIMEOUT`.
 pub async fn capture(shell: &Shell, command: &str) -> Result<CommandOutput> {
     let mut child = Command::new(&shell.path);
     child.arg("-lc").arg(command).kill_on_drop(true);
@@ -107,6 +170,30 @@ mod tests {
 
         assert!(!truncated);
         assert_eq!(output, "ok");
+    }
+
+    #[tokio::test]
+    async fn run_captured_collects_stdout_and_success_status() {
+        let output = run_captured(&test_shell(), "printf ok").await.unwrap();
+
+        assert_eq!(output.exit_code, Some(0));
+        assert!(output.success);
+        assert_eq!(output.stdout, "ok");
+        assert_eq!(output.stderr, "");
+        assert!(!output.stdout_truncated);
+        assert!(!output.stderr_truncated);
+    }
+
+    #[tokio::test]
+    async fn run_captured_collects_stderr_and_failed_status() {
+        let output = run_captured(&test_shell(), "printf problem >&2; exit 7")
+            .await
+            .unwrap();
+
+        assert_eq!(output.exit_code, Some(7));
+        assert!(!output.success);
+        assert_eq!(output.stdout, "");
+        assert_eq!(output.stderr, "problem");
     }
 
     #[tokio::test]

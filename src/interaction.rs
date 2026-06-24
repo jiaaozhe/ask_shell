@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::Result;
 
 use crate::{
     conversation,
@@ -7,10 +7,8 @@ use crate::{
     provider::{AiProvider, AiResponse},
     shell::Shell,
     status::Status,
-    terminal::{self, CommandOutcome, InspectRequest},
+    terminal::{self, CommandOutcome, InspectRequest, PostRunDecision},
 };
-
-const MAX_TURNS: usize = 8;
 
 #[derive(Debug, Clone, Copy)]
 enum ModelCallReason {
@@ -18,6 +16,7 @@ enum ModelCallReason {
     UserAnswer,
     InspectResult,
     Feedback,
+    CommandResult,
 }
 
 impl ModelCallReason {
@@ -27,6 +26,7 @@ impl ModelCallReason {
             Self::UserAnswer => "Sending your answer to model",
             Self::InspectResult => "Sending inspect result to model",
             Self::Feedback => "Sending feedback to model",
+            Self::CommandResult => "Sending command result to model",
         }
     }
 }
@@ -36,11 +36,12 @@ pub async fn resolve_command(
     shell: &Shell,
     environment: &Environment,
     request: String,
+    print_only: bool,
 ) -> Result<Option<String>> {
     let mut messages = prompt::initial_messages(&request, shell, environment);
     let mut next_model_call = ModelCallReason::Initial;
 
-    for _ in 0..MAX_TURNS {
+    loop {
         let status = Status::start(format!("{}...", next_model_call.status_message()));
         let response = provider.ask(&messages).await?;
         drop(status);
@@ -71,7 +72,28 @@ pub async fn resolve_command(
                 let command = command.trim().to_string();
                 terminal::validate_command(&command)?;
                 match terminal::review_command(command, note)? {
-                    CommandOutcome::Run(command) => return Ok(Some(command)),
+                    CommandOutcome::Run(command) => {
+                        if print_only {
+                            return Ok(Some(command));
+                        }
+
+                        let status = Status::start(format!("Running: {command}"));
+                        let output = execute::run_captured(shell, &command).await?;
+                        drop(status);
+
+                        match terminal::review_command_result(&output)? {
+                            PostRunDecision::Done => return Ok(None),
+                            PostRunDecision::Continue(feedback) => {
+                                conversation::push_command_result_exchange(
+                                    &mut messages,
+                                    &command,
+                                    &output,
+                                    &feedback,
+                                );
+                                next_model_call = ModelCallReason::CommandResult;
+                            }
+                        }
+                    }
                     CommandOutcome::Feedback {
                         command,
                         note,
@@ -90,6 +112,4 @@ pub async fn resolve_command(
             }
         }
     }
-
-    bail!("too many clarification turns")
 }

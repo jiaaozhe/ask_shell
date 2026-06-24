@@ -56,6 +56,10 @@ Rules:
 - The inspect reason must be brief: at most 40 Chinese characters or 12 English words.
 - The inspect reason should only say why the information is needed.
 - You may receive inspect results from the user as JSON with type "inspect_result".
+- You may receive the executed result of a command you suggested as JSON with type "command_result".
+- If a command_result has "success" false, analyze "stderr", "stdout", and "exit_code", then return a corrected command.
+- If "success" is true but "feedback" is non-empty, the executed command did not meet the user's intent; use the feedback to produce a different or corrective command.
+- A command you suggested may have already run and caused side effects. Side effects cannot be undone, so your next command may be a corrective action rather than a redo of the prior one.
 - Use an empty note string unless a warning is necessary.
 - Only include a note when the command modifies or deletes files, installs packages, changes permissions, uses sudo, performs network requests, affects system state, may be slow, or has a non-obvious caveat.
 - When note is needed, keep it brief: one short sentence, no explanation of obvious command behavior.
@@ -123,5 +127,13 @@ mod tests {
         assert!(prompt.contains("- Shell: zsh (/bin/zsh)"));
         assert!(prompt.contains("- Shell version: zsh 5.9"));
         assert!(prompt.contains("Generate commands compatible with this OS and shell"));
+    }
+
+    #[test]
+    fn system_prompt_documents_command_result_protocol() {
+        let prompt = system_prompt(&test_shell(), &test_environment());
+
+        assert!(prompt.contains("command_result"));
+        assert!(prompt.contains("Side effects cannot be undone"));
     }
 }

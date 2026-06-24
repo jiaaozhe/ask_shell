@@ -76,14 +76,16 @@ async fn main() -> Result<()> {
     let environment = environment::Environment::detect(&shell);
     let provider = provider::build_provider(config)?;
 
-    if let Some(command) =
-        interaction::resolve_command(provider.as_ref(), &shell, &environment, request).await?
+    if let Some(command) = interaction::resolve_command(
+        provider.as_ref(),
+        &shell,
+        &environment,
+        request,
+        cli.print_command,
+    )
+    .await?
     {
-        if cli.print_command {
-            println!("{command}");
-        } else {
-            execute::run(&shell, &command).await?;
-        }
+        println!("{command}");
     }
 
     Ok(())

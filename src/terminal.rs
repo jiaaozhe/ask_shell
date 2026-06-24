@@ -27,6 +27,12 @@ pub enum CommandOutcome {
     Cancel,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum PostRunDecision {
+    Done,
+    Continue(String),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InspectDecision {
     Run,
@@ -85,6 +91,10 @@ pub fn review_inspect(inspect: &InspectRequest) -> Result<bool> {
 pub fn print_inspect_output(output: &CommandOutput) {
     eprintln!();
     eprintln!("Inspect output:");
+    print_output_body(output);
+}
+
+fn print_output_body(output: &CommandOutput) {
     if !output.stdout.is_empty() {
         eprint!("{}", output.stdout);
         if !output.stdout.ends_with('\n') {
@@ -129,6 +139,32 @@ pub fn review_command(mut command: String, note: String) -> Result<CommandOutcom
         }),
         CommandDecision::Cancel => Ok(CommandOutcome::Cancel),
     }
+}
+
+pub fn review_command_result(output: &CommandOutput) -> Result<PostRunDecision> {
+    eprintln!();
+    eprintln!("Result:");
+    print_output_body(output);
+    eprintln!();
+    eprintln!(
+        "Status: {}",
+        match output.exit_code {
+            Some(0) => "succeeded (exit 0)".to_string(),
+            Some(code) => format!("failed (exit {code})"),
+            None => "terminated by signal".to_string(),
+        }
+    );
+    eprintln!();
+
+    let continue_by_default = !output.success;
+    if !choose_post_run_decision(continue_by_default)? {
+        return Ok(PostRunDecision::Done);
+    }
+
+    eprintln!();
+    eprintln!("What should change? (leave empty to let the model diagnose)");
+    let feedback = read_prompted_line("> ")?;
+    Ok(PostRunDecision::Continue(feedback))
 }
 
 pub fn validate_command(command: &str) -> Result<()> {
@@ -190,6 +226,33 @@ fn choose_command_decision() -> Result<CommandDecision> {
             "" | "n" | "no" => return Ok(CommandDecision::Cancel),
             _ => {
                 eprintln!("Please answer y, n, e, or f.");
+            }
+        }
+    }
+}
+
+fn choose_post_run_decision(continue_by_default: bool) -> Result<bool> {
+    if io::stdin().is_terminal() && io::stderr().is_terminal() {
+        let items = ["Done", "Continue"];
+        let default = if continue_by_default { 1 } else { 0 };
+        let selection = select_action(&items, default)?;
+        return Ok(matches!(selection, Some(1)));
+    }
+
+    let prompt = if continue_by_default {
+        "Continue? [Y/n]: "
+    } else {
+        "Continue? [y/N]: "
+    };
+    loop {
+        eprint!("{prompt}");
+        io::stderr().flush()?;
+        match read_line()?.trim().to_lowercase().as_str() {
+            "" => return Ok(continue_by_default),
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            _ => {
+                eprintln!("Please answer y or n.");
             }
         }
     }
