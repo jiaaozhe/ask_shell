@@ -153,6 +153,7 @@ pub fn review_command_result(output: &CommandOutput) -> Result<PostRunDecision> 
     eprintln!("Result:");
     print_output_body(output);
 
+    // 失败:把错误回灌给模型自动诊断重写(不弹菜单)
     if !output.success {
         let status = match output.exit_code {
             Some(code) => styled(&format!("failed (exit {code})"), "31"),
@@ -160,18 +161,23 @@ pub fn review_command_result(output: &CommandOutput) -> Result<PostRunDecision> 
         };
         eprintln!();
         eprintln!("Status: {status}");
+        return Ok(PostRunDecision::Continue(String::new()));
     }
-    eprintln!();
 
-    let continue_by_default = !output.success;
-    if !choose_post_run_decision(continue_by_default)? {
+    // 成功且有输出:用户已看到结果,直接结束
+    if !output.stdout.is_empty() || !output.stderr.is_empty() {
         return Ok(PostRunDecision::Done);
     }
 
+    // 成功但无输出(mkdir / touch / mv 这类):用户看不到效果,确认一下
     eprintln!();
-    eprintln!("What should change? (leave empty to let the model diagnose)");
-    let feedback = read_prompted_line("> ")?;
-    Ok(PostRunDecision::Continue(feedback))
+    if choose_post_run_decision(false)? {
+        eprintln!();
+        eprintln!("What should change? (leave empty to let the model diagnose)");
+        let feedback = read_prompted_line("> ")?;
+        return Ok(PostRunDecision::Continue(feedback));
+    }
+    Ok(PostRunDecision::Done)
 }
 
 pub fn validate_command(command: &str) -> Result<()> {
